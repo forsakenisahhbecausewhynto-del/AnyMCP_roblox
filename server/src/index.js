@@ -5,8 +5,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+const HOST = process.env.ANYMCP_HOST || "127.0.0.1";
 const PORT = Number(process.env.ANYMCP_PORT || 39271);
 const TOKEN = process.env.ANYMCP_TOKEN || randomUUID();
+const MAX_PENDING = 50;
+const MAX_QUEUE = 50;
 const pending = new Map();
 const queue = [];
 let lastHeartbeat = 0;
@@ -42,13 +45,17 @@ function askStudio(action, args = {}) {
   if (!studioOnline()) {
     throw new Error("Roblox Studio is offline. Open the AnyMCP Studio plugin.");
   }
-  if (pending.size >= 50) throw new Error("Too many pending Studio requests.");
+  if (pending.size >= MAX_PENDING || queue.length >= MAX_QUEUE) {
+    throw new Error("Too many pending Studio requests.");
+  }
 
   const id = randomUUID();
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
+      const queueIndex = queue.findIndex(command => command.id === id);
+      if (queueIndex !== -1) queue.splice(queueIndex, 1);
       reject(new Error("Studio request timed out."));
     }, 10_000);
 
@@ -82,16 +89,16 @@ const httpServer = createServer(async (req, res) => {
       return res.end();
     }
 
+    if (req.headers["x-anymcp-token"] !== TOKEN) {
+      return send(res, 401, { error: "Unauthorized" });
+    }
+
     if (url.pathname === "/health" && req.method === "GET") {
       return send(res, 200, {
         ok: true,
         studioConnected: studioOnline(),
         studio: studioInfo
       });
-    }
-
-    if (req.headers["x-anymcp-token"] !== TOKEN) {
-      return send(res, 401, { error: "Unauthorized" });
     }
 
     if (req.method === "POST" && url.pathname === "/heartbeat") {
@@ -131,8 +138,8 @@ const httpServer = createServer(async (req, res) => {
   }
 });
 
-httpServer.listen(PORT, "127.0.0.1", () => {
-  console.error(`AnyMCP bridge listening on 127.0.0.1:${PORT}`);
+httpServer.listen(PORT, HOST, () => {
+  console.error(`AnyMCP bridge listening on ${HOST}:${PORT}`);
 });
 
 const mcp = new McpServer({

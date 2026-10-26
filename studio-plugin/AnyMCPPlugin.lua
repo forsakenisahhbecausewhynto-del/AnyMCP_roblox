@@ -5,7 +5,7 @@
 
     Features:
       - Native Studio toolbar button and dockable control panel
-      - Localhost-only bridge URL validation
+            - Localhost and GitHub Codespaces bridge URL validation
       - Connect / disconnect controls
       - Server health check
       - Automatic heartbeat and command polling
@@ -62,45 +62,45 @@ local function shortText(value, maxLength)
     return text:sub(1, maxLength or MAX_RESPONSE_LENGTH)
 end
 
--- Only HTTP loopback addresses are accepted.
--- This prevents accidentally forwarding project information to a remote host.
 local function validateBaseUrl(value)
     value = trim(value):gsub("/+$", "")
 
     local host, portText = value:match("^http://([%w%.%-]+):(%d+)$")
+    if host then
+        host = string.lower(host)
+        if host ~= "127.0.0.1" and host ~= "localhost" then
+            return nil, "HTTP is only allowed for localhost or 127.0.0.1."
+        end
 
-    if not host or not portText then
-        return nil, "Use http://127.0.0.1:39271 or http://localhost:39271."
+        local port = tonumber(portText)
+        if not port or port < 1 or port > 65535 then
+            return nil, "The port must be between 1 and 65535."
+        end
+
+        return "http://" .. host .. ":" .. tostring(port)
     end
 
-    host = string.lower(host)
-
-    if host ~= "127.0.0.1" and host ~= "localhost" then
-        return nil, "For safety, the bridge must run on this computer."
+    local codespaceHost = value:match(
+        "^https://([%w][%w%-]*)%.app%.github%.dev$"
+    )
+    if codespaceHost then
+        return "https://" .. string.lower(codespaceHost) .. ".app.github.dev"
     end
 
-    local port = tonumber(portText)
-    if not port or port < 1 or port > 65535 then
-        return nil, "The port must be between 1 and 65535."
-    end
-
-    return "http://" .. host .. ":" .. tostring(port)
+    return nil, "Use a localhost URL or a HTTPS *.app.github.dev URL."
 end
 
--- HTTP helper:
--- requireToken=false is used only for the server's /health endpoint.
-local function httpRequest(method, path, body, requireToken)
+local function httpRequest(method, path, body, token)
     local headers = {
         ["Content-Type"] = "application/json",
     }
 
-    if requireToken ~= false then
-        if not activeToken or activeToken == "" then
-            return nil, "No session token is configured."
-        end
-
-        headers["X-AnyMCP-Token"] = activeToken
+    token = token or activeToken
+    if not token or token == "" then
+        return nil, "No session token is configured."
     end
+
+    headers["X-AnyMCP-Token"] = token
 
     local options = {
         Url = baseUrl .. path,
@@ -277,7 +277,7 @@ end
 
 makeLabel("AnyMCP • Roblox Studio", 20, COLORS.text, true)
 makeLabel(
-    "Connect your local MCP server to Studio. This plugin supports "
+    "Connect your MCP server to Studio. This plugin supports "
     .. "read-only hierarchy and selection tools.",
     12,
     COLORS.muted
@@ -306,7 +306,7 @@ local tokenBox = makeTextBox(
 
 makeLabel(
     "The token is used for this session only and is not saved "
-    .. "by this plugin. Only loopback URLs are accepted.",
+    .. "by this plugin. Localhost and Codespaces URLs are accepted.",
     11,
     COLORS.muted
 )
@@ -513,8 +513,7 @@ local function sendCommandResult(command)
     local response, err = httpRequest(
         "POST",
         "/result",
-        payload,
-        true
+        payload
     )
 
     if not response then
@@ -562,8 +561,7 @@ local function startBridge()
     local health, healthError = httpRequest(
         "GET",
         "/health",
-        nil,
-        false
+        nil
     )
 
     if not health or health.ok ~= true then
@@ -581,8 +579,7 @@ local function startBridge()
         {
             placeName = game.Name,
             gameId = tostring(game.PlaceId),
-        },
-        true
+        }
     )
 
     if not heartbeat then
@@ -612,8 +609,7 @@ local function startBridge()
                 {
                     placeName = game.Name,
                     gameId = tostring(game.PlaceId),
-                },
-                true
+                }
             )
 
             if not response then
@@ -637,8 +633,7 @@ local function startBridge()
             local response, err = httpRequest(
                 "GET",
                 "/next",
-                nil,
-                true
+                nil
             )
 
             if response then
@@ -676,11 +671,17 @@ testButton.Activated:Connect(function()
 
     baseUrl = validatedUrl
 
+    local token = trim(tokenBox.Text)
+    if token == "" then
+        setStatus("Paste the session token from the Node server.", COLORS.error)
+        return
+    end
+
     local health, err = httpRequest(
         "GET",
         "/health",
         nil,
-        false
+        token
     )
 
     if not health or health.ok ~= true then
