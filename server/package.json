@@ -1,0 +1,14 @@
+{
+  "name": "anymcp-roblox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "MCP bridge for Roblox Studio",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.0"
+  }
+}
