@@ -5,7 +5,7 @@
 
     Features:
       - Native Studio toolbar button and dockable control panel
-            - Localhost and GitHub Codespaces bridge URL validation
+        - Localhost and GitHub Codespaces bridge URL validation
       - Connect / disconnect controls
       - Server health check
       - Automatic heartbeat and command polling
@@ -63,7 +63,7 @@ local function shortText(value, maxLength)
 end
 
 local function validateBaseUrl(value)
-    value = trim(value):gsub("/+$", "")
+    value = trim(value)
 
     local host, portText = value:match("^http://([%w%.%-]+):(%d+)$")
     if host then
@@ -87,7 +87,7 @@ local function validateBaseUrl(value)
         return "https://" .. string.lower(codespaceHost) .. ".app.github.dev"
     end
 
-    return nil, "Use a localhost URL or a HTTPS *.app.github.dev URL."
+    return nil, "Use localhost or the exact HTTPS Codespaces URL."
 end
 
 local function httpRequest(method, path, body, token)
@@ -125,12 +125,20 @@ local function httpRequest(method, path, body, token)
     end)
 
     if not requestOk then
-        return nil, shortText(response)
+        return nil, "Connection failed: " .. shortText(response)
     end
 
     if not response.Success then
-        return nil, "HTTP " .. tostring(response.StatusCode)
-            .. ": " .. shortText(response.Body, 240)
+        local statusCode = tonumber(response.StatusCode)
+        local messages = {
+            [401] = "Authentication failed. Check the current session token.",
+            [403] = "Access denied. Check Codespaces port visibility.",
+            [404] = "Endpoint not found. Check the exact forwarded URL.",
+            [429] = "Too many requests. Wait and try again.",
+            [500] = "The server reported an internal error.",
+        }
+        return nil, messages[statusCode]
+            or "HTTP request failed with status " .. tostring(statusCode) .. "."
     end
 
     if not response.Body or response.Body == "" then
@@ -290,7 +298,7 @@ local statusLabel = makeLabel(
     true
 )
 
-makeLabel("Local bridge URL", 12, COLORS.text, true)
+makeLabel("Bridge URL", 12, COLORS.text, true)
 local urlBox = makeTextBox(
     "http://127.0.0.1:39271",
     baseUrl,
@@ -311,7 +319,7 @@ makeLabel(
     COLORS.muted
 )
 
-local testButton = makeButton("Test local server")
+local testButton = makeButton("Test server connection")
 local connectButton = makeButton("Connect to bridge")
 
 makeLabel("Supported commands", 13, COLORS.text, true)
@@ -551,12 +559,12 @@ local function startBridge()
     baseUrl = validatedUrl
     activeToken = token
 
-    -- Persist only the loopback URL, never the token.
+    -- Persist only the validated URL, never the token.
     pcall(function()
         plugin:SetSetting("baseUrl", baseUrl)
     end)
 
-    setStatus("Checking local server...", COLORS.muted)
+    setStatus("Checking server connection...", COLORS.muted)
 
     local health, healthError = httpRequest(
         "GET",
@@ -598,10 +606,12 @@ local function startBridge()
     connectButton.Text = "Disconnect"
     setStatus("Connected. Waiting for MCP commands.", COLORS.success)
 
-    print("[AnyMCP] Connected to local bridge at " .. baseUrl)
+    print("[AnyMCP] Bridge connected.")
 
     -- Heartbeat worker
     task.spawn(function()
+        local retryCount = 0
+
         while running and loopVersion == thisVersion do
             local response, err = httpRequest(
                 "POST",
@@ -613,21 +623,25 @@ local function startBridge()
             )
 
             if not response then
+                retryCount = math.min(retryCount + 1, 5)
                 setStatus(
                     "Heartbeat error; retrying: " .. shortText(err, 150),
                     COLORS.error
                 )
             else
+                retryCount = 0
                 setStatus("Connected. Waiting for MCP commands.", COLORS.success)
             end
 
-            task.wait(HEARTBEAT_INTERVAL)
+            local delay = HEARTBEAT_INTERVAL * (2 ^ retryCount)
+            task.wait(math.min(delay, 30) + math.random() * 0.5)
         end
     end)
 
     -- Command polling worker
     task.spawn(function()
         local pollErrorShown = false
+        local retryCount = 0
 
         while running and loopVersion == thisVersion do
             local response, err = httpRequest(
@@ -637,6 +651,7 @@ local function startBridge()
             )
 
             if response then
+                retryCount = 0
                 if pollErrorShown then
                     pollErrorShown = false
                     setStatus(
@@ -649,14 +664,18 @@ local function startBridge()
                     sendCommandResult(response.command)
                 end
             elseif not pollErrorShown then
+                retryCount = math.min(retryCount + 1, 5)
                 pollErrorShown = true
                 setStatus(
                     "Polling error; retrying: " .. shortText(err, 150),
                     COLORS.error
                 )
+            else
+                retryCount = math.min(retryCount + 1, 5)
             end
 
-            task.wait(POLL_INTERVAL)
+            local delay = POLL_INTERVAL * (2 ^ retryCount)
+            task.wait(math.min(delay, 30) + math.random() * 0.5)
         end
     end)
 end

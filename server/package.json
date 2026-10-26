@@ -5,7 +5,8 @@
   "type": "module",
   "description": "MCP bridge for Roblox Studio",
   "scripts": {
-    "start": "node src/index.js"
+    "start": "node src/index.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
